@@ -1,0 +1,9 @@
+.settings/
+Debug/
+Startup/
+.cproject
+.project
+Stm32L053_drivers Debug.launch
+STM32L053R8TX_FLASH.ld
+Src/syscalls
+Src/sysmem.c
