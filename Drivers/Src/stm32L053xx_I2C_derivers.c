@@ -226,9 +226,41 @@ uint8_t I2C_Master_ReceiveIT(I2C_Handle_t *pI2CHandle , uint8_t *pRxBuffer , uin
 
 void I2C_Slave_Send(I2C_Handle_t* pI2CHandle , uint8_t Own_adress, uint8_t *pTxBuffer , uint32_t len ){
 
+	while(((I2C1-> I2C_ISR >> 15) & 0x01) == 1);
 	pI2CHandle -> I2C_Config.Data_Length = len;
-	pI2CHandle -> I2C_Config.TxRxState = pTxBuffer ;
+	pI2CHandle -> I2C_Config.pTxBuffer= pTxBuffer ;
 	pI2CHandle->I2C_Config.TxRxState = I2C_BUSY_IN_TX_SLAVE;
+	// OA -> I2C_OAR1 , bit 0-9
+	pI2CHandle -> pI2C -> I2C_OAR1 |= (Own_adress << 1);
+	// enable own address , in // OA -> I2C_OAR1 , bit 15
+	pI2CHandle -> pI2C -> I2C_OAR1 |= (ENABLE << 15);
+	// NOSTRETCH enable slave to do stretching , register cr1 , bit NOSTRETCH 17
+	pI2CHandle -> pI2C->I2C_CR1 &= ~(0x01 <<17);
+	// RELOAD to tell to NBYTES there more data to be transmitted , reg i2c_cr2 -> bit 24
+	pI2CHandle -> pI2C->I2C_CR2 |= (0x01 <<24);
+	// Nbyte cr1 -> 16
+	pI2CHandle -> pI2C->I2C_CR2 |= (0x01 <<16);
+	// SBC is used to strech betwen 8th and 9th bit to end N/Ack , reg i2c_cr1 -> bit 16
+	pI2CHandle -> pI2C -> I2C_CR1 |= (0x01 << 16);
+	///////////////////////////gcen
+	pI2CHandle -> pI2C -> I2C_CR1 |= (0x01 << 19);
+	// enabling interrupt of ADDRIE , register cr1 , bit ADDRIE 3
+	pI2CHandle -> pI2C->I2C_CR1 |= (0x01 <<3);
+	//enabling stop flag, register cr1 , bit stop 5
+	pI2CHandle -> pI2C->I2C_CR1 |= (0x01 << 5);
+
+
+	I2C_Peri_Control(pI2CHandle->pI2C , ENABLE);
+
+
+}
+
+void I2C_Slave_Receive(I2C_Handle_t* pI2CHandle , uint8_t Own_adress, uint8_t *pRxBuffer , uint32_t len ){
+
+	while(((I2C1-> I2C_ISR >> 15) & 0x01) == 1);
+	pI2CHandle -> I2C_Config.Data_Length = len;
+	pI2CHandle -> I2C_Config.pRxBuffer = pRxBuffer ;
+	pI2CHandle->I2C_Config.TxRxState = I2C_BUSY_IN_RX_SLAVE;
 	// OA -> I2C_OAR1 , bit 0-9
 	pI2CHandle -> pI2C -> I2C_OAR1 |= (Own_adress << 1);
 	// enable own address , in // OA -> I2C_OAR1 , bit 15
@@ -273,22 +305,7 @@ void I2C_EV_IRQHandling(I2C_Handle_t *pI2CHandle ){
 	I2C_Rx_state = 0 ;
 	I2C_Tx_state = 0 ;
 
-
-	if(pI2CHandle->I2C_Config.Data_Length < 0){
-		// ensuring that the last byte ack
-		Interrupt_src = 0 ;
-		pI2CHandle -> pI2C->I2C_CR2 &= ~(0x01 <<24);
-		pI2CHandle -> pI2C->I2C_CR1 &= ~(0x01 <<3);
-		pI2CHandle -> pI2C -> I2C_OAR1 &= ~(ENABLE << 15);
-		pI2CHandle -> pI2C->I2C_CR2 &= ~(0x01 <<16);
-		pI2CHandle -> pI2C -> I2C_CR1 &= ~(0x01 << 19);
-	}
-
-	if(TRC &&  Interrupt_src){
-		//write 1 to nbyte for streching release
-		pI2CHandle -> pI2C->I2C_CR2 |= (0x01 <<16);
-	}
-
+	// send data using slave mode
 	if(Tx_Event && (pI2CHandle->I2C_Config.TxRxState == I2C_BUSY_IN_TX_SLAVE)){
 		pI2CHandle -> pI2C -> I2C_TXDR = *(pI2CHandle->I2C_Config.pTxBuffer);
 		pI2CHandle->I2C_Config.Data_Length--;
@@ -300,13 +317,56 @@ void I2C_EV_IRQHandling(I2C_Handle_t *pI2CHandle ){
 				// disable add event by claering ADDRCF : i2c_icr -> bit 3
 				pI2CHandle -> pI2C->I2C_ICR |= (0x01 << 3);
 				pI2CHandle->I2C_Config.TxRxState = I2C_READY ;
+
+
 			}
 			pI2CHandle -> pI2C->I2C_CR1 &= ~(0x01 <<3);
 			pI2CHandle->I2C_Config.TxRxState = I2C_READY ;
 			ApplicationCallBack(pI2CHandle , Tx_terminated);
 		}
 	}
+	if(TRC &&  Interrupt_src){
+	//write 1 to nbyte for streching release
+		*(pI2CHandle->I2C_Config.pRxBuffer) = pI2CHandle -> pI2C -> I2C_RXDR ;
+		pI2CHandle->I2C_Config.Data_Length--;
+		pI2CHandle->I2C_Config.pRxBuffer ++ ;
+		////////////
+		if(pI2CHandle->I2C_Config.Data_Length == 0)
+		{
+			if(Interrupt_src){
+				// disable add event by claering ADDRCF : i2c_icr -> bit 3
+				pI2CHandle -> pI2C->I2C_ICR |= (0x01 << 3);
+				pI2CHandle->I2C_Config.TxRxState = I2C_READY ;
+			}
+			pI2CHandle -> pI2C->I2C_CR1 &= ~(0x01 <<3);
+			pI2CHandle->I2C_Config.TxRxState = I2C_READY ;
 
+			ApplicationCallBack(pI2CHandle , Rx_terminated);
+		}
+		pI2CHandle -> pI2C->I2C_CR2 |= (0x01 <<16);
+
+	}
+
+	// receiving data using slave mode
+
+//	if(Rx_Event && (pI2CHandle->I2C_Config.TxRxState == I2C_BUSY_IN_RX_SLAVE)){
+//		*(pI2CHandle->I2C_Config.pRxBuffer) = pI2CHandle -> pI2C -> I2C_RXDR ;
+//		pI2CHandle->I2C_Config.Data_Length--;
+//		pI2CHandle->I2C_Config.pRxBuffer ++ ;
+//		////////////
+//		if(pI2CHandle->I2C_Config.Data_Length == 0)
+//		{
+//			if(Interrupt_src){
+//				// disable add event by claering ADDRCF : i2c_icr -> bit 3
+//				pI2CHandle -> pI2C->I2C_ICR |= (0x01 << 3);
+//				pI2CHandle->I2C_Config.TxRxState = I2C_READY ;
+//			}
+//			pI2CHandle -> pI2C->I2C_CR1 &= ~(0x01 <<3);
+//			pI2CHandle->I2C_Config.TxRxState = I2C_READY ;
+//			ApplicationCallBack(pI2CHandle , Tx_terminated);
+//		}
+//	}
+	// sending data as master
 	if(Tx_Event && (pI2CHandle->I2C_Config.TxRxState == I2C_BUSY_IN_TX)){
 		pI2CHandle -> pI2C -> I2C_TXDR = *(pI2CHandle->I2C_Config.pTxBuffer);
 		pI2CHandle->I2C_Config.Data_Length--;
@@ -322,6 +382,7 @@ void I2C_EV_IRQHandling(I2C_Handle_t *pI2CHandle ){
 		}
 	}
 
+	// receiving data as master
 	if(Rx_Event){
 		*pI2CHandle->I2C_Config.pRxBuffer = pI2CHandle -> pI2C -> I2C_RXDR;
 		pI2CHandle->I2C_Config.Data_Length --;
@@ -332,19 +393,28 @@ void I2C_EV_IRQHandling(I2C_Handle_t *pI2CHandle ){
 		}
 
 	}
+	if(Stop_Event){
+		// Disable Reload bit , 24
+		pI2CHandle -> pI2C->I2C_CR2 &= ~(0x01 <<24);
+		// disable own address OA1EN , bit 15
+		pI2CHandle -> pI2C -> I2C_OAR1 &= ~(ENABLE << 15);
+		// set 0 in NBYTE bit 16
+		pI2CHandle -> pI2C->I2C_CR2 &= ~(0x01 <<16);
+		// clearing genral call enable // GCEN , bit 19
+		pI2CHandle -> pI2C -> I2C_CR1 &= ~(0x01 << 19);
+		// OA -> I2C_OAR1 , bit 0-9
+		pI2CHandle -> pI2C -> I2C_OAR1 &= ~(0xFF << 1);
+		// disable stop interrupt
+		pI2CHandle -> pI2C -> I2C_ICR |= (0x01 << 5);
+	}
 	if(ADDR_Event){
+		//disabling address match interrupt // ADDRCF , bit 3
 		pI2CHandle -> pI2C->I2C_ICR |= (0x01 << 3);
-		// concene slave mode
+		//enabling transfer complete interrupt // TCE , bit 6
 		pI2CHandle -> pI2C->I2C_CR1 |= (0x01 << 6);
 		Interrupt_src = 1 ;
 	}
-	if(Stop_Event){
-		I2C1->I2C_CR2 &= ~(0x01 <<24);
-		I2C1->I2C_CR1 &= ~(0x01 <<3);
-		I2C1 -> I2C_OAR1 &= ~(ENABLE << 15);
-		I2C1->I2C_CR2 &= ~(0x01 <<16);
-		I2C1 -> I2C_CR1 &= ~(0x01 << 19);
-	}
+
 
 
 }
